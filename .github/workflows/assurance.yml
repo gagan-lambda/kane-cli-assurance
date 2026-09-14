@@ -300,6 +300,18 @@ jobs:
           else:
               lines += ["", "### Coverage", "", "_Run `kane-cli cover gaps` locally for the full coverage ribbon._"]
 
+          # Evidence viewer — list serve commands so user can open locally after downloading artifact
+          import glob
+          evidence_files = sorted(glob.glob(".testmuai/evidence/*.evidence"))
+          if evidence_files:
+              lines += ["", "### View Evidence Locally",
+                        "",
+                        "> Download the `evidence-${{ github.run_id }}` artifact, extract it, then run:",
+                        ""]
+              for ef in evidence_files:
+                  fname = ef.split("/")[-1]
+                  lines.append(f"```\nkane-cli evidence serve {fname}\n```")
+
           with open(summary_path, "a") as f:
               f.write("\n".join(lines) + "\n")
           PYEOF
