@@ -122,57 +122,131 @@ jobs:
       - name: Build job summary
         if: always()
         run: |
-          # Parse testrun summary from NDJSON
-          SUMMARY=$(grep '"type":"testrun_summary"' /tmp/testrun.ndjson 2>/dev/null | tail -n 1)
-          EXEC_ID=$(echo "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['execution']['id'])" 2>/dev/null || echo "")
-          STATUS=$(echo  "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['execution']['status'])" 2>/dev/null || echo "unknown")
-          PASSED=$(echo  "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['totals']['passed'])" 2>/dev/null || echo "?")
-          FAILED=$(echo  "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['totals']['failed'])" 2>/dev/null || echo "?")
-          TOTAL=$(echo   "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['totals']['tests'])"  2>/dev/null || echo "?")
-          DURATION=$(echo "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['duration_s']))" 2>/dev/null || echo "?")
+          python3 - <<'PYEOF'
+          import json, os, sys
 
-          if [ "$STATUS" = "passed" ]; then
-            BADGE="🟢"
-          else
-            BADGE="🔴"
-          fi
+          ndjson_path = "/tmp/testrun.ndjson"
+          cover_path  = "/tmp/cover.json"
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          prd = "${{ steps.prd.outputs.path }}"
+          run_id = "${{ github.run_id }}"
 
-          EVIDENCE_LINK=""
-          if [ -n "$EXEC_ID" ]; then
-            EVIDENCE_LINK="https://kaneai.lambdatest.com/test-manager/executions/${EXEC_ID}"
-          fi
+          # Parse testrun NDJSON
+          summary_line = None
+          member_lines = []
+          try:
+              with open(ndjson_path) as f:
+                  for raw in f:
+                      raw = raw.strip()
+                      if not raw:
+                          continue
+                      try:
+                          obj = json.loads(raw)
+                      except Exception:
+                          continue
+                      t = obj.get("type", "")
+                      if t == "testrun_summary":
+                          summary_line = obj
+                      elif t == "testrun_authored_member_end":
+                          member_lines.append(obj)
+          except FileNotFoundError:
+              pass
 
-          {
-            echo "## $BADGE Kane CLI Assurance Results"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| **PRD** | \`${{ steps.prd.outputs.path }}\` |"
-            echo "| **Status** | $STATUS |"
-            echo "| **Tests** | $TOTAL total — $PASSED passed, $FAILED failed |"
-            echo "| **Duration** | ${DURATION}s |"
-            if [ -n "$EVIDENCE_LINK" ]; then
-              echo "| **Evidence** | [View execution on KaneAI]($EVIDENCE_LINK) |"
-            fi
-            echo ""
-            echo "### Coverage"
-            echo '```'
-            cat /tmp/cover.json 2>/dev/null | python3 -c "
-          import sys, json
-          for line in sys.stdin:
-              line = line.strip()
-              if not line:
-                  continue
-              try:
-                  d = json.loads(line)
-                  if d.get('type') == 'gaps':
-                      for uc in d.get('use_cases', []):
-                          print(f\"  {uc.get('id','?')}  {uc.get('title','?')}  designed={uc.get('designed_pct','?')}%  proven={uc.get('proven_pct','?')}%\")
-              except Exception:
-                  pass
-          " 2>/dev/null || echo "  (run kane-cli cover gaps locally for the full ribbon)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if summary_line:
+              exec_id  = summary_line.get("execution", {}).get("id", "")
+              status   = summary_line.get("execution", {}).get("status", "unknown")
+              upload   = summary_line.get("upload", "skipped")
+              totals   = summary_line.get("totals", {})
+              passed   = totals.get("passed", "?")
+              failed   = totals.get("failed", "?")
+              total    = totals.get("tests",  "?")
+              duration = round(summary_line.get("duration_s", 0))
+          else:
+              exec_id = status = upload = ""; passed = failed = total = "?"; duration = "?"
+
+          badge = "🟢" if status == "passed" else "🔴"
+
+          # Evidence link — only shown when upload succeeded
+          evidence_row = ""
+          if exec_id and upload != "skipped":
+              url = f"https://kaneai.lambdatest.com/test-manager/executions/{exec_id}"
+              evidence_row = f"| **Evidence** | [View execution on KaneAI]({url}) |"
+          elif exec_id:
+              artifact_url = f"https://github.com/${{ github.repository }}/actions/runs/{run_id}#artifacts"
+              evidence_row = f"| **Evidence** | [Download from Actions artifact]({artifact_url}) (execution `{exec_id}`) |"
+
+          # Parse coverage gaps
+          cover_rows = []
+          try:
+              with open(cover_path) as f:
+                  for raw in f:
+                      raw = raw.strip()
+                      if not raw:
+                          continue
+                      try:
+                          obj = json.loads(raw)
+                      except Exception:
+                          continue
+                      if obj.get("type") == "gaps":
+                          for uc in obj.get("use_cases", []):
+                              uid   = uc.get("id", "?")
+                              title = uc.get("title", "?")
+                              des   = uc.get("designed_pct", "?")
+                              prv   = uc.get("proven_pct",   "?")
+                              cover_rows.append(f"| {uid} | {title} | {des}% | {prv}% |")
+          except FileNotFoundError:
+              pass
+
+          # Per-test results table
+          test_rows = []
+          for m in member_lines:
+              s = m.get("status", "?")
+              icon = "✅" if s == "passed" else "❌"
+              path = m.get("path", "?").split("/")[-1].replace("_test.md", "")
+              dur  = m.get("duration_s", "?")
+              test_rows.append(f"| {icon} | `{path}` | {s} | {dur}s |")
+
+          lines = [
+              f"## {badge} Kane CLI Assurance Results",
+              "",
+              "| | |",
+              "|---|---|",
+              f"| **PRD** | `{prd}` |",
+              f"| **Status** | {status} |",
+              f"| **Tests** | {total} total — {passed} passed, {failed} failed |",
+              f"| **Duration** | {duration}s |",
+          ]
+          if evidence_row:
+              lines.append(evidence_row)
+
+          if test_rows:
+              lines += [
+                  "",
+                  "### Test Results",
+                  "",
+                  "| | Test | Status | Duration |",
+                  "|---|---|---|---|",
+              ] + test_rows
+
+          if cover_rows:
+              lines += [
+                  "",
+                  "### Coverage",
+                  "",
+                  "| Use Case | Title | Designed | Proven |",
+                  "|---|---|---|---|",
+              ] + cover_rows
+          else:
+              lines += [
+                  "",
+                  "### Coverage",
+                  "",
+                  "_Run `kane-cli cover gaps` locally for the full coverage ribbon._",
+              ]
+
+          with open(summary_path, "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PYEOF
 
       - name: Upload evidence packs
         if: always()
