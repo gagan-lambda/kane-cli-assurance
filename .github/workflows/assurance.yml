@@ -70,29 +70,41 @@ jobs:
           LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
           KANE_CLI_USER_AGENT: github-actions
 
-      # Resolve which tests to run: use input, or discover all *_test.md IDs from frontmatter
-      - name: Resolve test IDs
+      # Resolve which tests to run: use input IDs via --from-context, or pass all *_test.md paths
+      - name: Resolve test paths
         id: tests
         run: |
           IDS="${{ github.event.inputs.tests }}"
-          if [ -z "$IDS" ]; then
-            IDS=$(grep -rh 'id: t-' .testmuai/tests/ 2>/dev/null | sed 's/.*id: //' | tr '\n' ',' | sed 's/,$//')
+          if [ -n "$IDS" ]; then
+            echo "mode=context" >> "$GITHUB_OUTPUT"
+            echo "ids=$IDS" >> "$GITHUB_OUTPUT"
+            echo "Running by context IDs: $IDS"
+          else
+            PATHS=$(find .testmuai/tests -name '*_test.md' | sort | tr '\n' ' ' | sed 's/ $//')
+            if [ -z "$PATHS" ]; then
+              echo "No *_test.md files found under .testmuai/tests/."
+              exit 1
+            fi
+            echo "mode=paths" >> "$GITHUB_OUTPUT"
+            echo "paths=$PATHS" >> "$GITHUB_OUTPUT"
+            echo "Running test files: $PATHS"
           fi
-          if [ -z "$IDS" ]; then
-            echo "No test IDs found. Ensure *_test.md files exist under .testmuai/tests/."
-            exit 1
-          fi
-          echo "ids=$IDS" >> "$GITHUB_OUTPUT"
-          echo "Running tests: $IDS"
 
       - name: Run tests
         id: run
         run: |
           PARALLEL="${{ github.event.inputs.parallel || '3' }}"
-          kane-cli testrun run \
-            --from-context "${{ steps.tests.outputs.ids }}" \
-            --parallel "$PARALLEL" \
-            --headless 2>&1 | tee /tmp/testrun.ndjson
+          if [ "${{ steps.tests.outputs.mode }}" = "context" ]; then
+            kane-cli testrun run \
+              --from-context "${{ steps.tests.outputs.ids }}" \
+              --parallel "$PARALLEL" \
+              --headless 2>&1 | tee /tmp/testrun.ndjson
+          else
+            kane-cli testrun run \
+              ${{ steps.tests.outputs.paths }} \
+              --parallel "$PARALLEL" \
+              --headless 2>&1 | tee /tmp/testrun.ndjson
+          fi
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         env:
           LT_USERNAME: ${{ secrets.LT_USERNAME }}
