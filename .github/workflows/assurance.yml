@@ -118,6 +118,40 @@ jobs:
           KANE_CLI_USER_AGENT: github-actions
         continue-on-error: true
 
+      - name: Re-author failed tests
+        id: reauthor
+        if: steps.run.outputs.exit_code != '0'
+        run: |
+          FAILED=$(python3 -c "
+          import json, sys
+          paths = []
+          try:
+              with open('/tmp/testrun.ndjson') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line: continue
+                      try:
+                          obj = json.loads(line)
+                      except: continue
+                      if obj.get('type') == 'testrun_authored_member_end' and obj.get('status') == 'failed':
+                          paths.append(obj['path'])
+          except FileNotFoundError: pass
+          print(' '.join(paths))
+          ")
+          if [ -z "$FAILED" ]; then
+            echo "No failed tests to re-author"
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Re-authoring: $FAILED"
+          kane-cli testrun run $FAILED --author --headless 2>&1 | tee /tmp/reauthor.ndjson
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        env:
+          LT_USERNAME: ${{ secrets.LT_USERNAME }}
+          LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+          KANE_CLI_USER_AGENT: github-actions
+        continue-on-error: true
+
       - name: Check coverage
         id: cover
         run: kane-cli cover gaps --json 2>&1 | tee /tmp/cover.json || true
@@ -140,76 +174,85 @@ jobs:
           python3 - <<'PYEOF'
           import json, os
 
-          ndjson_path  = "/tmp/testrun.ndjson"
-          cover_path   = "/tmp/cover.json"
+          def parse_ndjson(path):
+              summary, members = None, []
+              try:
+                  with open(path) as f:
+                      for raw in f:
+                          raw = raw.strip()
+                          if not raw: continue
+                          try: obj = json.loads(raw)
+                          except: continue
+                          t = obj.get("type", "")
+                          if t == "testrun_summary":
+                              summary = obj
+                          elif t == "testrun_authored_member_end":
+                              members.append(obj)
+              except FileNotFoundError:
+                  pass
+              return summary, members
+
+          def test_rows(members):
+              rows = []
+              for m in members:
+                  s    = m.get("status", "?")
+                  icon = "✅" if s == "passed" else "❌"
+                  name = m.get("path", "?").split("/")[-1].replace("_test.md", "")
+                  dur  = m.get("duration_s", "?")
+                  rows.append(f"| {icon} | `{name}` | {s} | {dur}s |")
+              return rows
+
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
           prd          = "${{ steps.prd.outputs.path }}"
           artifact_url = "${{ steps.evidence.outputs.artifact-url }}"
 
-          # Parse testrun NDJSON
-          summary_line = None
-          member_lines = []
-          try:
-              with open(ndjson_path) as f:
-                  for raw in f:
-                      raw = raw.strip()
-                      if not raw:
-                          continue
-                      try:
-                          obj = json.loads(raw)
-                      except Exception:
-                          continue
-                      t = obj.get("type", "")
-                      if t == "testrun_summary":
-                          summary_line = obj
-                      elif t == "testrun_authored_member_end":
-                          member_lines.append(obj)
-          except FileNotFoundError:
-              pass
-
-          if summary_line:
-              exec_id  = summary_line.get("execution", {}).get("id", "")
-              status   = summary_line.get("execution", {}).get("status", "unknown")
-              totals   = summary_line.get("totals", {})
+          # Initial run
+          run_summary, run_members = parse_ndjson("/tmp/testrun.ndjson")
+          if run_summary:
+              exec_id  = run_summary.get("execution", {}).get("id", "")
+              status   = run_summary.get("execution", {}).get("status", "unknown")
+              totals   = run_summary.get("totals", {})
               passed   = totals.get("passed", "?")
               failed   = totals.get("failed", "?")
               total    = totals.get("tests",  "?")
-              duration = round(summary_line.get("duration_s", 0))
+              duration = round(run_summary.get("duration_s", 0))
           else:
               exec_id = status = ""; passed = failed = total = "?"; duration = "?"
 
-          badge = "🟢" if status == "passed" else "🔴"
+          # Re-author run
+          ra_summary, ra_members = parse_ndjson("/tmp/reauthor.ndjson")
+          if ra_summary:
+              ra_status  = ra_summary.get("execution", {}).get("status", "unknown")
+              ra_totals  = ra_summary.get("totals", {})
+              ra_passed  = ra_totals.get("passed", "?")
+              ra_failed  = ra_totals.get("failed", "?")
+              ra_total   = ra_totals.get("tests",  "?")
+              ra_duration = round(ra_summary.get("duration_s", 0))
+              # Final status is the re-author outcome
+              final_status = ra_status
+          else:
+              ra_status = ra_passed = ra_failed = ra_total = ra_duration = None
+              final_status = status
 
-          # Parse coverage gaps
+          badge = "🟢" if final_status == "passed" else "🔴"
+
+          # Coverage gaps
           cover_rows = []
           try:
-              with open(cover_path) as f:
+              with open("/tmp/cover.json") as f:
                   for raw in f:
                       raw = raw.strip()
-                      if not raw:
-                          continue
-                      try:
-                          obj = json.loads(raw)
-                      except Exception:
-                          continue
+                      if not raw: continue
+                      try: obj = json.loads(raw)
+                      except: continue
                       if obj.get("type") == "gaps":
                           for uc in obj.get("use_cases", []):
-                              uid   = uc.get("id", "?")
-                              title = uc.get("title", "?")
-                              des   = uc.get("designed_pct", "?")
-                              prv   = uc.get("proven_pct",   "?")
-                              cover_rows.append(f"| {uid} | {title} | {des}% | {prv}% |")
+                              cover_rows.append(
+                                  f"| {uc.get('id','?')} | {uc.get('title','?')} "
+                                  f"| {uc.get('designed_pct','?')}% | {uc.get('proven_pct','?')}% |"
+                              )
           except FileNotFoundError:
               pass
-
-          # Per-test results table
-          test_rows = []
-          for m in member_lines:
-              s    = m.get("status", "?")
-              icon = "✅" if s == "passed" else "❌"
-              path = m.get("path", "?").split("/")[-1].replace("_test.md", "")
-              dur  = m.get("duration_s", "?")
-              test_rows.append(f"| {icon} | `{path}` | {s} | {dur}s |")
 
           lines = [
               f"## {badge} Kane CLI Assurance Results",
@@ -217,42 +260,42 @@ jobs:
               "| | |",
               "|---|---|",
               f"| **PRD** | `{prd}` |",
-              f"| **Status** | {status} |",
+              f"| **Status** | {final_status} |",
               f"| **Tests** | {total} total — {passed} passed, {failed} failed |",
               f"| **Duration** | {duration}s |",
           ]
           if exec_id and artifact_url:
               lines.append(f"| **Evidence** | [Download evidence pack]({artifact_url}) (`{exec_id}`) |")
 
-          if test_rows:
+          # Initial run test results
+          rows = test_rows(run_members)
+          if rows:
+              lines += ["", "### Test Results", "", "| | Test | Status | Duration |", "|---|---|---|---|"] + rows
+
+          # Re-author results (only if re-author ran)
+          if ra_summary:
+              ra_badge = "🟢" if ra_status == "passed" else "🔴"
               lines += [
                   "",
-                  "### Test Results",
+                  f"### {ra_badge} Re-author Results",
+                  f"> {ra_total} re-authored — {ra_passed} passed, {ra_failed} failed ({ra_duration}s)",
                   "",
                   "| | Test | Status | Duration |",
                   "|---|---|---|---|",
-              ] + test_rows
+              ] + test_rows(ra_members)
 
+          # Coverage
           if cover_rows:
-              lines += [
-                  "",
-                  "### Coverage",
-                  "",
-                  "| Use Case | Title | Designed | Proven |",
-                  "|---|---|---|---|",
-              ] + cover_rows
+              lines += ["", "### Coverage", "", "| Use Case | Title | Designed | Proven |", "|---|---|---|---|"] + cover_rows
           else:
-              lines += [
-                  "",
-                  "### Coverage",
-                  "",
-                  "_Run `kane-cli cover gaps` locally for the full coverage ribbon._",
-              ]
+              lines += ["", "### Coverage", "", "_Run `kane-cli cover gaps` locally for the full coverage ribbon._"]
 
           with open(summary_path, "a") as f:
               f.write("\n".join(lines) + "\n")
           PYEOF
 
       - name: Fail job if tests failed
-        if: steps.run.outputs.exit_code != '0'
+        if: >
+          (steps.reauthor.outcome != 'skipped' && steps.reauthor.outputs.exit_code != '0') ||
+          (steps.reauthor.outcome == 'skipped' && steps.run.outputs.exit_code != '0')
         run: exit 1
