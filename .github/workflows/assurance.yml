@@ -159,6 +159,14 @@ jobs:
           LT_USERNAME: ${{ secrets.LT_USERNAME }}
           LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
 
+      - name: List evidence files
+        if: always()
+        run: |
+          echo "=== Evidence directory contents ==="
+          ls -la .testmuai/evidence/ 2>/dev/null || echo "Directory not found or empty"
+          echo "=== Matching .evidence files ==="
+          find .testmuai/evidence -name '*.evidence' 2>/dev/null || echo "None found"
+
       - name: Upload evidence packs
         if: always()
         id: evidence
@@ -167,6 +175,7 @@ jobs:
           name: evidence-${{ github.run_id }}
           path: .testmuai/evidence/*.evidence
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Build job summary
         if: always()
@@ -264,8 +273,9 @@ jobs:
               f"| **Tests** | {total} total — {passed} passed, {failed} failed |",
               f"| **Duration** | {duration}s |",
           ]
-          if exec_id and artifact_url:
-              lines.append(f"| **Evidence** | [Download evidence pack]({artifact_url}) (`{exec_id}`) |")
+          if artifact_url:
+              label = f" (`{exec_id}`)" if exec_id else ""
+              lines.append(f"| **Evidence** | [Download evidence pack]({artifact_url}){label} |")
 
           # Initial run test results
           rows = test_rows(run_members)
