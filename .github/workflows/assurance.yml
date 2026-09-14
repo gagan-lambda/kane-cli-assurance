@@ -125,17 +125,26 @@ jobs:
           LT_USERNAME: ${{ secrets.LT_USERNAME }}
           LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
 
+      - name: Upload evidence packs
+        if: always()
+        id: evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ github.run_id }}
+          path: .testmuai/evidence/*.evidence
+          retention-days: 30
+
       - name: Build job summary
         if: always()
         run: |
           python3 - <<'PYEOF'
-          import json, os, sys
+          import json, os
 
-          ndjson_path = "/tmp/testrun.ndjson"
-          cover_path  = "/tmp/cover.json"
+          ndjson_path  = "/tmp/testrun.ndjson"
+          cover_path   = "/tmp/cover.json"
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
-          prd = "${{ steps.prd.outputs.path }}"
-          run_id = "${{ github.run_id }}"
+          prd          = "${{ steps.prd.outputs.path }}"
+          artifact_url = "${{ steps.evidence.outputs.artifact-url }}"
 
           # Parse testrun NDJSON
           summary_line = None
@@ -161,25 +170,15 @@ jobs:
           if summary_line:
               exec_id  = summary_line.get("execution", {}).get("id", "")
               status   = summary_line.get("execution", {}).get("status", "unknown")
-              upload   = summary_line.get("upload", "skipped")
               totals   = summary_line.get("totals", {})
               passed   = totals.get("passed", "?")
               failed   = totals.get("failed", "?")
               total    = totals.get("tests",  "?")
               duration = round(summary_line.get("duration_s", 0))
           else:
-              exec_id = status = upload = ""; passed = failed = total = "?"; duration = "?"
+              exec_id = status = ""; passed = failed = total = "?"; duration = "?"
 
           badge = "🟢" if status == "passed" else "🔴"
-
-          # Evidence link — only shown when upload succeeded
-          evidence_row = ""
-          if exec_id and upload != "skipped":
-              url = f"https://kaneai.lambdatest.com/test-manager/executions/{exec_id}"
-              evidence_row = f"| **Evidence** | [View execution on KaneAI]({url}) |"
-          elif exec_id:
-              artifact_url = f"https://github.com/${{ github.repository }}/actions/runs/{run_id}#artifacts"
-              evidence_row = f"| **Evidence** | [Download from Actions artifact]({artifact_url}) (execution `{exec_id}`) |"
 
           # Parse coverage gaps
           cover_rows = []
@@ -206,7 +205,7 @@ jobs:
           # Per-test results table
           test_rows = []
           for m in member_lines:
-              s = m.get("status", "?")
+              s    = m.get("status", "?")
               icon = "✅" if s == "passed" else "❌"
               path = m.get("path", "?").split("/")[-1].replace("_test.md", "")
               dur  = m.get("duration_s", "?")
@@ -222,8 +221,8 @@ jobs:
               f"| **Tests** | {total} total — {passed} passed, {failed} failed |",
               f"| **Duration** | {duration}s |",
           ]
-          if evidence_row:
-              lines.append(evidence_row)
+          if exec_id and artifact_url:
+              lines.append(f"| **Evidence** | [Download evidence pack]({artifact_url}) (`{exec_id}`) |")
 
           if test_rows:
               lines += [
@@ -253,14 +252,6 @@ jobs:
           with open(summary_path, "a") as f:
               f.write("\n".join(lines) + "\n")
           PYEOF
-
-      - name: Upload evidence packs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: evidence-${{ github.run_id }}
-          path: .testmuai/evidence/*.evidence
-          retention-days: 30
 
       - name: Fail job if tests failed
         if: steps.run.outputs.exit_code != '0'
