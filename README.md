@@ -1,3 +1,4 @@
+
 # kane-cli Assurance
 
 Requirements-linked, evidence-sealed browser test suite authored via the [kane-cli assurance lifecycle](https://www.testmuai.com/docs/kane-cli-assurance).
@@ -39,6 +40,10 @@ kane-cli testrun run --from-context <t-id1>,<t-id2>,... --parallel 3 --headless
 ### Replay (CI / subsequent runs)
 
 ```bash
+# By file paths (default in CI)
+kane-cli testrun run .testmuai/tests/ --parallel 3 --headless
+
+# Or by context IDs
 kane-cli testrun run --from-context <t-ids> --parallel 3 --headless
 ```
 
@@ -75,7 +80,7 @@ PRD  →  Ingest  →  Extract  →  Review  →  Design  →  Author  →  Cove
 │       └── assurance.json         # Test data — fill in values, commit non-secrets
 ├── .github/
 │   └── workflows/
-│       └── assurance.yml          # CI workflow — needs LT_USERNAME + LT_ACCESS_KEY
+│       └── assurance.yml          # CI workflow — needs LT_USERNAME, LT_ACCESS_KEY, KANE_PROJECT_ID, KANE_FOLDER_ID
 ├── .context/                      # Assurance store — gitignored, do not edit
 ├── .gitignore
 └── README.md
@@ -100,15 +105,21 @@ Add these in **Settings → Secrets and variables → Actions**:
 |---|---|
 | `LT_USERNAME` | LambdaTest dashboard → Profile |
 | `LT_ACCESS_KEY` | LambdaTest dashboard → Profile |
+| `KANE_PROJECT_ID` | `kane-cli projects list` → copy the `id` field |
+| `KANE_FOLDER_ID` | `kane-cli folders list --project <id>` → copy the `id` field |
+
+`KANE_PROJECT_ID` and `KANE_FOLDER_ID` are needed for evidence packs to be uploaded to KaneAI and linked in the job summary. Without them, evidence is still saved as a workflow artifact but no KaneAI link appears.
 
 ### What the workflow does
 
 1. Auto-detects the PRD in `docs/` (or uses the `prd_file` input)
 2. Ingests it into a fresh local store
-3. Discovers all `t-*` test IDs from the committed `*_test.md` files
-4. Runs them in parallel with `--headless`
-5. Posts a **job summary** with pass/fail counts and a direct link to the execution on the KaneAI dashboard
-6. Uploads evidence packs as workflow artifacts (retained 30 days)
+3. Discovers all `*_test.md` files under `.testmuai/tests/` and runs them in parallel with `--headless`
+4. Posts a **job summary** with:
+   - Pass/fail totals and per-test results table
+   - Direct link to the execution on the KaneAI dashboard (when evidence upload succeeds)
+   - Coverage ribbon by use-case
+5. Uploads evidence packs as workflow artifacts (retained 30 days)
 
 ### Manual trigger inputs
 
