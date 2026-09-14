@@ -1,0 +1,92 @@
+{
+  "valid_manufacture_date": {
+    "value": "01/15/2020",
+    "secret": false,
+    "description": "A past Date of Manufacture value accepted on Step 1 for the Automobile journey."
+  },
+  "valid_first_name": {
+    "value": "John",
+    "secret": false,
+    "description": "A valid Step 2 first name for the quote journey."
+  },
+  "valid_last_name": {
+    "value": "Smith",
+    "secret": false,
+    "description": "A valid Step 2 last name for the quote journey."
+  },
+  "insurable_birth_date": {
+    "value": "03/15/1990",
+    "secret": false,
+    "description": "A Date of Birth that is in the past and satisfies the app's minimum-age rule for the chosen vehicle category."
+  },
+  "valid_street_address": {
+    "value": "123 Main Street",
+    "secret": false,
+    "description": "A valid Step 2 street address for the quote journey."
+  },
+  "valid_zip_code": {
+    "value": "10115",
+    "secret": false,
+    "description": "A valid Step 2 zip code for the quote journey."
+  },
+  "valid_city": {
+    "value": "Berlin",
+    "secret": false,
+    "description": "A valid Step 2 city for the quote journey."
+  },
+  "valid_insurance_sum": {
+    "value": "5000000",
+    "secret": false,
+    "description": "A Step 3 Insurance Sum option accepted for a standard Automobile quote."
+  },
+  "valid_merit_rating": {
+    "value": "0",
+    "secret": false,
+    "description": "A Step 3 Merit Rating option accepted for a standard Automobile quote."
+  },
+  "valid_email": {
+    "value": "john.smith@example.com",
+    "secret": false,
+    "description": "A valid Step 5 e-mail address for successful quote submission."
+  },
+  "malformed_email": {
+    "value": "not-an-email",
+    "secret": false,
+    "description": "An intentionally invalid Step 5 e-mail value for negative-submission testing."
+  },
+  "valid_phone": {
+    "value": "+491234567890",
+    "secret": false,
+    "description": "A valid Step 5 phone value for quote submission."
+  },
+  "valid_username": {
+    "value": "johnsmith",
+    "secret": false,
+    "description": "A valid Step 5 username for quote submission."
+  },
+  "valid_password": {
+    "value": "Test@1234",
+    "secret": true,
+    "description": "A valid Step 5 password for quote submission."
+  },
+  "mismatched_confirm_password": {
+    "value": "Wrong@5678",
+    "secret": true,
+    "description": "A Confirm Password value that intentionally differs from {{valid_password}} for negative-submission testing."
+  },
+  "invalid_numeric_text": {
+    "value": "abcdef",
+    "secret": false,
+    "description": "An alphabetic value to enter into Engine Performance for invalid numeric-input testing."
+  },
+  "future_birth_date": {
+    "value": "01/01/2030",
+    "secret": false,
+    "description": "A Date of Birth later than the run date for invalid future-date testing."
+  },
+  "too_early_start_date": {
+    "value": "09/15/2026",
+    "secret": false,
+    "description": "A Start Date known to fall inside the app's minimum notice window for negative Step 3 testing."
+  }
+}

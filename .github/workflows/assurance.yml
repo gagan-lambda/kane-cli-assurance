@@ -1,0 +1,173 @@
+name: Kane CLI Assurance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.testmuai/tests/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      prd_file:
+        description: 'PRD file path (relative to repo root). Leave blank to auto-detect from docs/.'
+        required: false
+        default: ''
+      tests:
+        description: 'Comma-separated assurance test IDs to run (e.g. t-1,t-2). Leave blank to run all.'
+        required: false
+        default: ''
+      parallel:
+        description: 'Number of parallel workers'
+        required: false
+        default: '3'
+
+jobs:
+  assurance:
+    name: Assurance suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install kane-cli
+        run: npm install -g @testmuai/kane-cli@latest
+
+      - name: Authenticate
+        run: kane-cli whoami
+        env:
+          LT_USERNAME: ${{ secrets.LT_USERNAME }}
+          LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+
+      # Auto-detect the first .md file in docs/ if no PRD path is given
+      - name: Resolve PRD file
+        id: prd
+        run: |
+          PRD="${{ github.event.inputs.prd_file }}"
+          if [ -z "$PRD" ]; then
+            PRD=$(find docs -maxdepth 1 -name "*.md" | sort | head -n 1)
+          fi
+          if [ -z "$PRD" ]; then
+            echo "No PRD file found in docs/. Add a .md file or pass prd_file as input."
+            exit 1
+          fi
+          echo "path=$PRD" >> "$GITHUB_OUTPUT"
+          echo "Resolved PRD: $PRD"
+
+      - name: Ingest PRD
+        run: kane-cli context ingest "${{ steps.prd.outputs.path }}" --mode ci
+        env:
+          LT_USERNAME: ${{ secrets.LT_USERNAME }}
+          LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+          KANE_CLI_USER_AGENT: github-actions
+
+      # Resolve which tests to run: use input, or discover all *_test.md IDs from frontmatter
+      - name: Resolve test IDs
+        id: tests
+        run: |
+          IDS="${{ github.event.inputs.tests }}"
+          if [ -z "$IDS" ]; then
+            IDS=$(grep -rh 'id: t-' .testmuai/tests/ 2>/dev/null | sed 's/.*id: //' | tr '\n' ',' | sed 's/,$//')
+          fi
+          if [ -z "$IDS" ]; then
+            echo "No test IDs found. Ensure *_test.md files exist under .testmuai/tests/."
+            exit 1
+          fi
+          echo "ids=$IDS" >> "$GITHUB_OUTPUT"
+          echo "Running tests: $IDS"
+
+      - name: Run tests
+        id: run
+        run: |
+          PARALLEL="${{ github.event.inputs.parallel || '3' }}"
+          kane-cli testrun run \
+            --from-context "${{ steps.tests.outputs.ids }}" \
+            --parallel "$PARALLEL" \
+            --headless 2>&1 | tee /tmp/testrun.ndjson
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        env:
+          LT_USERNAME: ${{ secrets.LT_USERNAME }}
+          LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+          KANE_CLI_USER_AGENT: github-actions
+        continue-on-error: true
+
+      - name: Check coverage
+        id: cover
+        run: kane-cli cover gaps --json 2>&1 | tee /tmp/cover.json || true
+        env:
+          LT_USERNAME: ${{ secrets.LT_USERNAME }}
+          LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+
+      - name: Build job summary
+        if: always()
+        run: |
+          # Parse testrun summary from NDJSON
+          SUMMARY=$(grep '"type":"testrun_summary"' /tmp/testrun.ndjson 2>/dev/null | tail -n 1)
+          EXEC_ID=$(echo "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['execution']['id'])" 2>/dev/null || echo "")
+          STATUS=$(echo  "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['execution']['status'])" 2>/dev/null || echo "unknown")
+          PASSED=$(echo  "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['totals']['passed'])" 2>/dev/null || echo "?")
+          FAILED=$(echo  "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['totals']['failed'])" 2>/dev/null || echo "?")
+          TOTAL=$(echo   "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['totals']['tests'])"  2>/dev/null || echo "?")
+          DURATION=$(echo "$SUMMARY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['duration_s']))" 2>/dev/null || echo "?")
+
+          if [ "$STATUS" = "passed" ]; then
+            BADGE="🟢"
+          else
+            BADGE="🔴"
+          fi
+
+          EVIDENCE_LINK=""
+          if [ -n "$EXEC_ID" ]; then
+            EVIDENCE_LINK="https://kaneai.lambdatest.com/test-manager/executions/${EXEC_ID}"
+          fi
+
+          {
+            echo "## $BADGE Kane CLI Assurance Results"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **PRD** | \`${{ steps.prd.outputs.path }}\` |"
+            echo "| **Status** | $STATUS |"
+            echo "| **Tests** | $TOTAL total — $PASSED passed, $FAILED failed |"
+            echo "| **Duration** | ${DURATION}s |"
+            if [ -n "$EVIDENCE_LINK" ]; then
+              echo "| **Evidence** | [View execution on KaneAI]($EVIDENCE_LINK) |"
+            fi
+            echo ""
+            echo "### Coverage"
+            echo '```'
+            cat /tmp/cover.json 2>/dev/null | python3 -c "
+          import sys, json
+          for line in sys.stdin:
+              line = line.strip()
+              if not line:
+                  continue
+              try:
+                  d = json.loads(line)
+                  if d.get('type') == 'gaps':
+                      for uc in d.get('use_cases', []):
+                          print(f\"  {uc.get('id','?')}  {uc.get('title','?')}  designed={uc.get('designed_pct','?')}%  proven={uc.get('proven_pct','?')}%\")
+              except Exception:
+                  pass
+          " 2>/dev/null || echo "  (run kane-cli cover gaps locally for the full ribbon)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence packs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ github.run_id }}
+          path: .testmuai/evidence/*.evidence
+          retention-days: 30
+
+      - name: Fail job if tests failed
+        if: steps.run.outputs.exit_code != '0'
+        run: exit 1
