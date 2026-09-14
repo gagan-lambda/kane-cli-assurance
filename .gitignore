@@ -1,0 +1,12 @@
+# kane-cli assurance store — append-only, not git-mergeable
+.context/
+
+# Test run outputs and evidence packs
+.testmuai/tests/output-*/
+.testmuai/evidence/
+
+# OS / IDE
+.DS_Store
+.idea/
+*.iml
+.vscode/
