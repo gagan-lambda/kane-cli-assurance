@@ -42,11 +42,17 @@ jobs:
 
       - name: Authenticate
         run: |
-          kane-cli login --username "$LT_USERNAME" --access-key "$LT_ACCESS_KEY"
+          kane-cli login \
+            --username "$LT_USERNAME" \
+            --access-key "$LT_ACCESS_KEY" \
+            ${KANE_PROJECT_ID:+--project-id "$KANE_PROJECT_ID"} \
+            ${KANE_FOLDER_ID:+--folder-id "$KANE_FOLDER_ID"}
           kane-cli whoami
         env:
           LT_USERNAME: ${{ secrets.LT_USERNAME }}
           LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+          KANE_PROJECT_ID: ${{ secrets.KANE_PROJECT_ID }}
+          KANE_FOLDER_ID: ${{ secrets.KANE_FOLDER_ID }}
 
       # Auto-detect the first .md file in docs/ if no PRD path is given
       - name: Resolve PRD file
